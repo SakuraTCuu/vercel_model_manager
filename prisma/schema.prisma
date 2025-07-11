@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Model {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique         // 英文唯一名
+  label         String                  // 展示名
+  platform      String                  // 平台，如 comfyui、sd
+  price         String
+  decryptSecret String                  // 解密密钥
+  size          String                  // 文件大小
+  createdAt     DateTime @default(now())// 开发/上传时间
+  description   String?                 // 备注/描述
+  apiKeys       ApiKey[]                // 关联的key
+}
+
+model ApiKey {
+  id            Int      @id @default(autoincrement())
+  buyer         String
+  modelId       Int
+  model         Model    @relation(fields: [modelId], references: [id])
+  platform      String
+  amount        String
+  mac           String
+  lastRequest   String
+  requestCount  Int
+  ip            String
+  status        Boolean
+  remark        String?
+  key           String   @unique
+  createdAt     DateTime @default(now())
+  requestLogs   ApiKeyRequestLog[]
+  whitelists    ApiKeyWhitelist[]
+}
+
+model ApiKeyRequestLog {
+  id         Int      @id @default(autoincrement())
+  apiKeyId   Int
+  apiKey     ApiKey   @relation(fields: [apiKeyId], references: [id])
+  mac        String
+  cpu        String
+  ip         String
+  timestamp  DateTime @default(now())
+  status     String   // normal/exception/warning
+  message    String?  // 详细描述
+}
+
+model ApiKeyWhitelist {
+  id        Int      @id @default(autoincrement())
+  apiKeyId  Int
+  apiKey    ApiKey   @relation(fields: [apiKeyId], references: [id])
+  remark    String?
+  createdAt DateTime @default(now())
+}
+
+model AdminUser {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+}
