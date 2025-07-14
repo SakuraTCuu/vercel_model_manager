@@ -15,6 +15,8 @@ TIMEOUT = 15
 LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "secure_loader.log"))
 MODEL_EXTENSIONS = [".safetensors", ".ckpt", ".pt"]
 
+ENCRYPT_FLAG = b'WK_ENCRYPTED_v1'  # 16字节flag
+
 def get_logger():
     import logging
     logger = logging.getLogger("SecureModelLoader")
@@ -95,11 +97,21 @@ def read_safetensors_metadata(filepath: str, logger=None):
         return {}
 
 def is_my_model(filepath: str, logger=None) -> bool:
-    # 测试用，始终认为是加密模型
-    if logger:
-        logger.info(f"[测试] 跳过实际校验，始终认为是加密模型: {filepath}")
-    print(f"[测试] 跳过实际校验，始终认为是加密模型: {filepath}")
-    return True
+    try:
+        with open(filepath, "rb") as f:
+            file_flag = f.read(16)
+        if file_flag == ENCRYPT_FLAG:
+            if logger:
+                logger.info(f"检测到加密flag: {file_flag}")
+            return True
+        else:
+            if logger:
+                logger.info(f"未检测到加密flag: {file_flag}")
+            return False
+    except Exception as e:
+        if logger:
+            logger.error(f"检测加密flag失败: {str(e)}")
+        return False
 
 def request_decryption_key(model_path: str, logger=None) -> str:
     try:
@@ -159,11 +171,9 @@ def request_decryption_key(model_path: str, logger=None) -> str:
         raise
 
 def decrypt_model(encrypted_data, key: str, logger=None):
-    # 测试用，直接返回原始模型数据
-    if logger:
-        logger.info("[测试] 跳过实际解密，直接返回原始模型数据")
-    print("[测试] 跳过实际解密，直接返回原始模型数据")
-    return encrypted_data
+    # 真实解密逻辑（xor为例）
+    decrypted = xor_decrypt(encrypted_data, bytes.fromhex(key))
+    return decrypted
 
 def print_model_metadata(model_path, logger=None):
     try:
@@ -204,17 +214,37 @@ def on_model_loaded(sd_model):
             return
         logger.info(f"🔔 检测到模型加载: {model_path}")
         print(f"🔔 检测到模型加载: {model_path}")
-        # 新增：无论是否加密都打印metadata
-        print_model_metadata(model_path, logger)
-        # 之后再判断是否加密
+        # 判断是否加密（flag）
         if not is_my_model(model_path, logger):
             logger.info(f"🟢 非加密模型，跳过自定义处理: {model_path}")
             print(f"🟢 非加密模型，跳过自定义处理: {model_path}")
             return
         logger.info(f"🔒 检测到加密模型，开始自定义处理: {model_path}")
         print(f"🔒 检测到加密模型，开始自定义处理: {model_path}")
+        # 读取除flag外的加密内容
+        with open(model_path, "rb") as f:
+            f.seek(16)
+            encrypted_data = f.read()
         decryption_key = request_decryption_key(model_path, logger)
-        # decrypt_model(sd_model, decryption_key, logger)  # 你可以在此处实现实际解密
+        decrypted = decrypt_model(encrypted_data, decryption_key, logger)
+        # 读取metadata
+        idx = decrypted.rfind(b"__META__")
+        if idx == -1:
+            logger.error("❌ 未找到元数据标记 __META__，无法校验md5")
+            print("❌ 未找到元数据标记 __META__，无法校验md5")
+            return
+        model_content = decrypted[:idx]
+        meta_bytes = decrypted[idx+len(b"__META__"):]
+        import json, hashlib
+        meta = json.loads(meta_bytes.decode("utf-8"))
+        md5_actual = hashlib.md5(model_content).hexdigest()
+        md5_expected = meta.get("model_md5", "")
+        if md5_actual == md5_expected:
+            logger.info(f"✅ 解密后模型md5校验通过: {md5_actual}")
+            print(f"✅ 解密后模型md5校验通过: {md5_actual}")
+        else:
+            logger.error(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
+            print(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
         logger.info(f"✅ 加密模型处理流程结束: {model_path}")
         print(f"✅ 加密模型处理流程结束: {model_path}")
     except Exception as e:
