@@ -36,3 +36,9 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
+
+/client/tools/model_public_key.pem
+/client/tools/model_private_key.pem 
+/client/tools/out/
+/client/tools/src_model/
+/client/tools/sec_model/
