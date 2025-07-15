@@ -8,6 +8,8 @@ import urllib.request
 import urllib.parse
 from base64 import b64encode, b64decode
 import time
+import argparse
+import uuid
 
 # ========== 新增依赖 ========== #
 try:
@@ -163,14 +165,47 @@ def encrypt_safetensors(model_path, output_path, meta=None, mode="hybrid"):
         raise ValueError("不支持的加密模式: {}".format(mode))
 
 def main():
-    if len(sys.argv) < 3:
-        print("用法: python model_encryptor.py <模型路径> <输出目录> [xor|hybrid]")
-        sys.exit(1)
-    model_path = sys.argv[1]
-    output_path = sys.argv[2]
-    mode = sys.argv[3] if len(sys.argv) > 3 else "xor"  # 默认xor
-    model_name = os.path.basename(model_path)
-    print(f"开始加密: {model_name}，模式: {mode}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("model_path")
+    parser.add_argument("output_path")
+    parser.add_argument("mode", nargs="?", default="xor")
+    parser.add_argument("--key", type=str, help="自定义32位hex key（仅xor模式）")
+    args = parser.parse_args()
+
+    model_path = args.model_path
+    output_path = args.output_path
+    mode = args.mode
+    custom_key = args.key
+
+    if mode == "xor":
+        if custom_key:
+            if len(custom_key) != 32:
+                print("自定义key必须是32位hex字符串（16字节）")
+                sys.exit(1)
+            encrypt_key = custom_key
+        else:
+            # 自动生成32位uuid（不带-，hex字符串）
+            encrypt_key = uuid.uuid4().hex
+        decrypt_key = encrypt_key
+        key_bytes = bytes.fromhex(encrypt_key)
+        with open(model_path, "rb") as f:
+            data = f.read()
+        encrypted = xor_encrypt(data, key_bytes)
+        metadata = {
+            "is_wk_encrypt": True,
+            "author": "wks",
+            "time": int(time.time()),
+            "model_md5": hashlib.md5(data).hexdigest(),
+        }
+        encrypted_with_meta = ENCRYPT_FLAG + encrypted + b"\n__META__" + json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+        out_file = os.path.join(output_path, os.path.basename(model_path))
+        with open(out_file, "wb") as f:
+            f.write(encrypted_with_meta)
+        print(f"加密完成！加密key: {encrypt_key}\n解密key: {decrypt_key}")
+        print(f"元数据: {json.dumps(metadata, ensure_ascii=False, indent=2)}")
+        print("如需生成/更换RSA密钥对，请运行: python -c 'import tools.model_encryptor as m; m.generate_rsa_keypair()'")
+        return
+    # hybrid模式保持原逻辑
     encrypt_key, decrypt_key, _, meta = encrypt_safetensors(model_path, output_path, mode=mode)
     print(f"加密完成！加密key: {encrypt_key}\n解密key: {decrypt_key}")
     print(f"元数据: {json.dumps(meta, ensure_ascii=False, indent=2)}")

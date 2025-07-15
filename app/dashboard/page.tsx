@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { v4 as uuidv4 } from 'uuid';
 
 function getDefaultOrderId() {
   const now = new Date();
@@ -126,7 +127,7 @@ function DashboardPage() {
     setError("");
     setSaving(true);
     const foundModel = models.find(m => m.id === modelId);
-    const key = `APIKEY_${buyer}_${foundModel ? foundModel.name : ''}_${Math.random().toString(36).slice(2, 10)}`;
+    const key = uuidv4().replace(/-/g, ''); // 32位uuid
     const newItem = {
       buyer,
       modelId,
