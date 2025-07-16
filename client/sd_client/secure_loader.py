@@ -7,6 +7,7 @@ import requests
 import base64
 from pathlib import Path
 from modules import script_callbacks
+import struct
 
 # ========== 直接配置参数 ==========
 SERVER_URL = "https://vercel-model-manager.vercel.app/api/verify-key"
@@ -175,6 +176,10 @@ def decrypt_model(encrypted_data, key: str, logger=None):
     decrypted = xor_decrypt(encrypted_data, bytes.fromhex(key))
     return decrypted
 
+def xor_decrypt(data, key):
+    """XOR解密，与加密同理"""
+    return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+
 def print_model_metadata(model_path, logger=None):
     try:
         path = str(model_path)
@@ -199,6 +204,29 @@ def print_model_metadata(model_path, logger=None):
         if logger:
             logger.error(f"读取模型metadata失败: {str(e)}")
 
+def decrypt_safetensors_file(enc_path, out_path, key, logger=None):
+    """
+    解密safetensors加密文件（无flag版）：
+    1. 读取头部和metadata
+    2. 读取加密tensor数据
+    3. xor解密
+    4. 还原为原始safetensors文件
+    """
+    with open(enc_path, "rb") as f:
+        header = f.read(8)
+        meta_len = int.from_bytes(header, "little")
+        metadata = f.read(meta_len)
+        encrypted_tensor = f.read()
+    decrypted_tensor = xor_decrypt(encrypted_tensor, bytes.fromhex(key))
+    # 写回原始safetensors文件
+    with open(out_path, "wb") as f:
+        f.write(header)
+        f.write(metadata)
+        f.write(decrypted_tensor)
+    if logger:
+        logger.info(f"解密完成，输出文件: {out_path}")
+    print(f"解密完成，输出文件: {out_path}")
+
 # ========== 模型加载回调 ==========
 def on_model_loaded(sd_model):
     logger = get_logger()
@@ -221,30 +249,29 @@ def on_model_loaded(sd_model):
             return
         logger.info(f"🔒 检测到加密模型，开始自定义处理: {model_path}")
         print(f"🔒 检测到加密模型，开始自定义处理: {model_path}")
-        # 读取除flag外的加密内容
+        # ========== 新xor safetensors解密流程 ==========
         with open(model_path, "rb") as f:
-            f.seek(16)
-            encrypted_data = f.read()
+            header = f.read(8)
+            meta_len = int.from_bytes(header, "little")
+            metadata = f.read(meta_len)
+            encrypted_tensor = f.read()
         decryption_key = request_decryption_key(model_path, logger)
-        decrypted = decrypt_model(encrypted_data, decryption_key, logger)
-        # 读取metadata
-        idx = decrypted.rfind(b"__META__")
-        if idx == -1:
-            logger.error("❌ 未找到元数据标记 __META__，无法校验md5")
-            print("❌ 未找到元数据标记 __META__，无法校验md5")
-            return
-        model_content = decrypted[:idx]
-        meta_bytes = decrypted[idx+len(b"__META__"):]
+        decrypted_tensor = xor_decrypt(encrypted_tensor, bytes.fromhex(decryption_key))
+        # 校验md5（如果metadata里有model_md5字段）
         import json, hashlib
-        meta = json.loads(meta_bytes.decode("utf-8"))
-        md5_actual = hashlib.md5(model_content).hexdigest()
-        md5_expected = meta.get("model_md5", "")
-        if md5_actual == md5_expected:
-            logger.info(f"✅ 解密后模型md5校验通过: {md5_actual}")
-            print(f"✅ 解密后模型md5校验通过: {md5_actual}")
-        else:
-            logger.error(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
-            print(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
+        try:
+            meta_obj = json.loads(metadata)
+            md5_expected = meta_obj.get("model_md5", None)
+            if md5_expected:
+                md5_actual = hashlib.md5(decrypted_tensor).hexdigest()
+                if md5_actual == md5_expected:
+                    logger.info(f"✅ 解密后模型md5校验通过: {md5_actual}")
+                    print(f"✅ 解密后模型md5校验通过: {md5_actual}")
+                else:
+                    logger.error(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
+                    print(f"❌ 解密后模型md5校验失败: {md5_actual} ≠ {md5_expected}")
+        except Exception as e:
+            logger.warning(f"⚠️ metadata校验异常: {str(e)}")
         logger.info(f"✅ 加密模型处理流程结束: {model_path}")
         print(f"✅ 加密模型处理流程结束: {model_path}")
     except Exception as e:
