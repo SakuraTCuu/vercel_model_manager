@@ -87,6 +87,15 @@ def detect_wk_enc(header_obj: Dict[str, Any]):
 # 主加密流程
 # ------------------------------------------------------------------
 def encrypt_model(input_path: str, output_path: str, model_id: str | None, force: bool):
+    """
+    加密模型文件
+    
+    Args:
+        input_path: 输入的原始模型文件路径
+        output_path: 输出的加密模型文件路径  
+        model_id: 32位模型ID（实际就是后端的api_key），将写入metadata用于验证
+        force: 是否强制覆盖已加密的文件
+    """
     # 读取
     _, orig_header_bytes, orig_data_bytes, header_obj = read_safetensors_file(input_path)
 
@@ -103,6 +112,8 @@ def encrypt_model(input_path: str, output_path: str, model_id: str | None, force
     if not model_id or len(model_id) != 32:
         print(f"[wk-enc] model_id 非32位，自动生成: {model_id}")
         model_id = uuid.uuid4().hex
+    
+    print(f"[wk-enc] 使用 model_id (api_key): {model_id}")
 
     # metadata root
     meta = header_obj.get("__metadata__", {})
@@ -113,7 +124,7 @@ def encrypt_model(input_path: str, output_path: str, model_id: str | None, force
     wk_payload_str = json.dumps(
         {
             "ver": VERSION,
-            "model_id": model_id,
+            "model_id": model_id,  # model_id就是api_key，客户端将用此值向后端验证
             "alg": ALG_NAME,
             "enc": True,
             "datalen": len(orig_data_bytes),
@@ -135,7 +146,7 @@ def encrypt_model(input_path: str, output_path: str, model_id: str | None, force
     write_safetensors_file(output_path, new_header_bytes, enc_data)
 
     print(f"[OK] Encrypted safetensors (alg={ALG_NAME}) -> {output_path}")
-    print(f"[INFO] Model ID: {model_id}")
+    print(f"[INFO] Model ID (api_key): {model_id}")
     print(f"[INFO] Header size={len(new_header_bytes)} Data size={len(enc_data)}")
 
 
@@ -146,7 +157,7 @@ def main():
     ap = argparse.ArgumentParser(description="Encrypt safetensors (wk_enc rev-tensor).")
     ap.add_argument("-i", "--input", required=True, help="Input .safetensors file")
     ap.add_argument("-o", "--output", required=True, help="Output encrypted .safetensors file")
-    ap.add_argument("-m", "--model_id", default=None, help="32-char model ID; auto if omitted")
+    ap.add_argument("-m", "--model_id", default=None, help="32-char model ID (实际就是api_key); auto-generated if omitted")
     ap.add_argument("--force", action="store_true", help="Overwrite if file already marked wk_enc")
     args = ap.parse_args()
 

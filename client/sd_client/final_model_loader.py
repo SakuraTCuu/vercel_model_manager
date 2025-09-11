@@ -25,14 +25,9 @@ import modules.sd_models as sd_models
 
 # ========== 配置参数 ==========
 SERVER_URL = "https://vercel-model-manager.vercel.app/api/verify-key"
-API_KEY = "APIKEY_wk_test_model_1_lv3s2cc4"
 TIMEOUT = 15
 LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "final_model_loader.log"))
 MODEL_EXTENSIONS = [".safetensors", ".ckpt", ".pt"]
-
-# 配置验证
-if not API_KEY or API_KEY == "your-api-key-here":
-    print("⚠️ 警告: 请设置有效的API_KEY")
 
 # safetensors import ----------------------------------------------------------
 try:
@@ -88,17 +83,17 @@ def get_device_fingerprint():
         return "unknown_device"
 
 # ========== 远程密钥请求 ==========
-def request_decryption_key(model_path: str, logger=None) -> str:
+def request_decryption_key(model_id: str, logger=None) -> dict:
     """
     向远程服务器请求解密密钥
-    注意：当前后端暂未实现密钥返回逻辑，此函数为占位实现
+    使用从模型metadata中读取的model_id（实际就是api_key）进行验证
     """
     try:
         if logger:
-            logger.info("开始向服务器请求解密密钥...")
+            logger.info(f"开始向服务器请求解密密钥，model_id: {model_id}")
         
-        if not API_KEY:
-            raise ValueError("API密钥未设置")
+        if not model_id:
+            raise ValueError("model_id未设置")
         
         device_id = get_device_fingerprint()
         mac = ":".join([f"{(uuid.getnode() >> i) & 0xff:02x}" for i in range(0, 8*6, 8)][::-1])
@@ -112,10 +107,11 @@ def request_decryption_key(model_path: str, logger=None) -> str:
             logger.info(f"GPU信息: {gpu}")
             logger.info(f"发送请求到服务器: {SERVER_URL}")
         
+        # 使用model_id作为key发送验证请求
         response = requests.post(
             SERVER_URL,
             json={
-                "key": API_KEY,
+                "key": model_id,  # model_id就是api_key
                 "mac": mac,
                 "cpu": gpu
             },
@@ -136,11 +132,12 @@ def request_decryption_key(model_path: str, logger=None) -> str:
                 logger.error(f"服务器拒绝请求: {error_msg}")
             raise PermissionError(f"授权失败: {error_msg}")
         
-        # TODO: 后端需要实现密钥返回逻辑
-        # 当前返回占位密钥，实际使用时需要根据后端响应获取真实密钥
-        if logger:
-            logger.warning("后端暂未实现密钥返回逻辑，使用占位密钥")
-        return "00000000000000000000000000000000"  # 32位占位密钥
+        # 返回后端提供的解密信息
+        return {
+            "success": True,
+            "xorResult": data.get("xorResult", ""),
+            "timestamp": data.get("timestamp", 0)
+        }
         
     except requests.exceptions.RequestException as e:
         if logger:
@@ -250,15 +247,28 @@ def _decrypt_xor_with_key(data: bytes, key: str) -> bytes:
         print(f"[final-loader] XOR解密失败: {e}")
         raise
 
+def _decrypt_xor_with_bytes(data: bytes, key_bytes: bytes) -> bytes:
+    """
+    使用字节密钥进行XOR解密
+    """
+    try:
+        out = bytearray(len(data))
+        for i, b in enumerate(data):
+            out[i] = b ^ key_bytes[i % len(key_bytes)]
+        return bytes(out)
+    except Exception as e:
+        print(f"[final-loader] XOR字节解密失败: {e}")
+        raise
+
 # -----------------------------------------------------------------------------
 # Core decrypt of file -> full safetensors bytes
 # -----------------------------------------------------------------------------
 def _decrypt_safetensors_file(path: str, alg: str, meta: dict,
                               header_len: int, header_bytes: bytes, header_obj: dict, 
-                              remote_key: str = None) -> bytes:
+                              decrypt_info: dict = None) -> bytes:
     """
     Read encrypted file's data block, decrypt by alg, return full safetensors bytes (header+data).
-    新增remote_key参数，用于远程密钥解密
+    decrypt_info: 从后端返回的解密信息 {"xorResult": str, "timestamp": int}
     """
     with open(path, "rb") as f:
         f.seek(8 + header_len)
@@ -273,11 +283,21 @@ def _decrypt_safetensors_file(path: str, alg: str, meta: dict,
     elif alg == "xor-ascii":
         print(f"[final-loader] decrypt alg=xor-ascii (whole block)...")
         data_dec = _decrypt_xor_ascii(data_enc, meta)
-    elif alg == "xor-remote" and remote_key:
+    elif alg == "xor-remote" and decrypt_info:
         print(f"[final-loader] decrypt alg=xor-remote (with remote key)...")
-        data_dec = _decrypt_xor_with_key(data_enc, remote_key)
+        xor_result = decrypt_info.get("xorResult", "")
+        if not xor_result:
+            raise ValueError("远程解密信息缺少xorResult")
+        # 将base64编码的xorResult解码为密钥
+        try:
+            key_bytes = base64.b64decode(xor_result)
+            data_dec = _decrypt_xor_with_bytes(data_enc, key_bytes)
+        except Exception as e:
+            raise ValueError(f"解析远程密钥失败: {e}")
     else:
-        raise RuntimeError(f"[final-loader] Unknown wk_enc alg: {alg}")
+        # 对于不认识的算法或缺少解密信息，尝试使用rev-tensor作为默认
+        print(f"[final-loader] Unknown/unsupported alg: {alg}, trying rev-tensor as fallback...")
+        data_dec = _decrypt_rev_tensor(data_enc, header_obj)
 
     full_bytes = struct.pack("<Q", len(header_bytes)) + header_bytes + data_dec
     return full_bytes
@@ -322,14 +342,20 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
 
             if wk_meta and wk_meta.get("enc"):
                 alg = wk_meta.get("alg", "?")
-                logger.info(f"检测到加密模型，算法: {alg}")
-                print(f"[final-loader] encrypted safetensors detected: alg={alg}")
+                model_id = wk_meta.get("model_id")  # 从metadata中读取model_id
+                
+                if not model_id:
+                    logger.error("加密模型缺少model_id")
+                    raise ValueError("加密模型缺少model_id")
+                
+                logger.info(f"检测到加密模型，算法: {alg}, model_id: {model_id}")
+                print(f"[final-loader] encrypted safetensors detected: alg={alg}, model_id={model_id}")
                 
                 try:
-                    # 如果是加密模型，请求远程密钥
-                    logger.info("开始请求远程解密密钥")
+                    # 使用从模型metadata读取的model_id请求远程密钥
+                    logger.info(f"开始使用model_id请求远程解密密钥: {model_id}")
                     
-                    remote_key = request_decryption_key(checkpoint_file, logger)
+                    decrypt_info = request_decryption_key(model_id, logger)
                     logger.info("成功获取远程解密密钥")
                     
                     # 使用wk_enc_loader的解密逻辑
@@ -337,7 +363,7 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     full_bytes = _decrypt_safetensors_file(
                         checkpoint_file, alg, wk_meta,
                         header_len, header_bytes, header_obj,
-                        remote_key
+                        decrypt_info
                     )
                     
                     logger.info("模型解密成功，开始加载")

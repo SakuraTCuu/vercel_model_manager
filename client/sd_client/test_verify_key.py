@@ -14,7 +14,7 @@ from typing import Dict, Any
 
 # 测试配置
 SERVER_URL = "https://vercel-model-manager.vercel.app/api/verify-key"
-TEST_API_KEY = "APIKEY_wk_test_model_1_lv3s2cc4"  # 请填入测试用的API密钥
+TEST_API_KEY = ""  # 请从后端管理界面获取有效的32位API Key
 TIMEOUT = 15
 
 def get_cpu_info() -> str:
