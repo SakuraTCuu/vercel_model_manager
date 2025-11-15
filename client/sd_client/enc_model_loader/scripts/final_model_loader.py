@@ -14,7 +14,6 @@ import io
 import os
 import json
 import struct
-import time
 import torch
 import uuid
 import platform
@@ -132,36 +131,18 @@ def request_decryption_key(model_id: str, logger=None) -> dict:
         if logger:
             logger.info(f"服务器响应: {data}")
         
-        # 检查统一返回格式
-        code = data.get("code", 0)
-        msg = data.get("msg", "")
-        id_value = data.get("id", "")
-        timestamp = data.get("timestamp", 0)
-        
-        if code == 0:
-            # 失败情况
-            error_msg = msg or "Unknown server error"
+        if not data.get("success"):
+            error_msg = data.get("error", "Unknown server error")
             if logger:
                 logger.error(f"服务器拒绝请求: {error_msg}")
             raise PermissionError(f"授权失败: {error_msg}")
         
-        # 成功情况
-        if code == 1:
-            if logger:
-                logger.info(f"验证成功: {msg}")
-            if not id_value:
-                raise ValueError("服务器返回成功但缺少解密密钥(id字段)")
-            if not timestamp:
-                raise ValueError("服务器返回成功但缺少时间戳(timestamp字段)")
-            # 返回解密信息，id字段包含xorResult
-            return {
-                "success": True,
-                "xorResult": id_value,
-                "timestamp": timestamp
-            }
-        
-        # 未知的code值
-        raise ValueError(f"未知的返回code: {code}")
+        # 返回后端提供的解密信息
+        return {
+            "success": True,
+            "xorResult": data.get("xorResult", ""),
+            "timestamp": data.get("timestamp", 0)
+        }
         
     except requests.exceptions.RequestException as e:
         if logger:

@@ -22,32 +22,49 @@ export async function POST(req: NextRequest) {
   let status = 'normal';
   let message = '';
 
+  // 统一返回格式
+  const formatResponse = (code: number, msg: string, id?: string, timestamp?: number) => {
+    const response: any = {
+      code,
+      msg,
+      id: id || '',
+    };
+    if (timestamp !== undefined) {
+      response.timestamp = timestamp;
+    }
+    return NextResponse.json(response);
+  };
+
   // 检查参数
   if (!key || !mac || !cpu) {
-    status = 'exception';
-    message = '缺少参数';
-    // 日志写入（无 key 时无法查 apiKeyId）
-    return NextResponse.json({ error: message }, { status: 400 });
+    return formatResponse(0, '缺少参数');
   }
+
+  // 查询API Key
   const apiKey = await prisma.apiKey.findUnique({ where: { key }, include: { model: true } });
-  if (!apiKey || !apiKey.status) {
+  
+  // 检查model_id是否存在
+  if (!apiKey) {
+    return formatResponse(0, '未知的model_id');
+  }
+
+  // 检查API Key状态
+  if (!apiKey.status) {
     status = 'exception';
-    message = '无效或已停用的key';
-    // 日志写入（无效 key）
-    if (apiKey) {
-      await prisma.apiKeyRequestLog.create({
-        data: {
-          apiKeyId: apiKey.id,
-          mac,
-          cpu,
-          ip,
-          timestamp: now,
-          status,
-          message,
-        },
-      });
-    }
-    return NextResponse.json({ error: message }, { status: 401 });
+    message = '已停用的key';
+    // 记录日志
+    await prisma.apiKeyRequestLog.create({
+      data: {
+        apiKeyId: apiKey.id,
+        mac,
+        cpu,
+        ip,
+        timestamp: now,
+        status,
+        message,
+      },
+    });
+    return formatResponse(0, '已停用的key');
   }
 
   // 检查 mac 是否变更
@@ -66,7 +83,7 @@ export async function POST(req: NextRequest) {
       isWhitelist = true;
     } else {
       status = 'exception';
-      message = 'MAC 变更';
+      message = 'MAC变更';
       macChanged = true;
     }
   }
@@ -96,17 +113,19 @@ export async function POST(req: NextRequest) {
 
   // 异常情况直接返回（白名单用户不拦截）
   if (status === 'exception' && !isWhitelist) {
-    return NextResponse.json({ error: message }, { status: 403 });
+    return formatResponse(0, 'MAC变更');
+  }
+
+  // 检查模型是否存在解密密钥
+  if (!apiKey.model?.decryptSecret) {
+    return formatResponse(0, '模型解密密钥未配置');
   }
 
   // 生成时间戳和异或结果（用模型的解密密钥）
   const timestamp = Math.floor(Date.now() / 1000); // 秒级时间戳
-  const secret = apiKey.model?.decryptSecret || '';
+  const secret = apiKey.model.decryptSecret;
   const xorResult = xorStrWithInt(secret, timestamp);
 
-  return NextResponse.json({
-    xorResult,
-    timestamp,
-    success: true,
-  });
+  // 成功返回
+  return formatResponse(1, 'ok', xorResult, timestamp);
 } 
