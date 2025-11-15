@@ -25,10 +25,15 @@ from pathlib import Path
 import modules.sd_models as sd_models
 
 # ========== 配置参数 ==========
-SERVER_URL = "https://vercel-model-manager.vercel.app/api/verify-key"
-TIMEOUT = 15
+# 支持通过环境变量覆盖，便于本地联调/网络加速
+SERVER_URL = os.environ.get("WK_SERVER_URL", "https://vercel-model-manager.vercel.app/api/verify-key")
+TIMEOUT = int(os.environ.get("WK_TIMEOUT", "15"))
+RETRIES = int(os.environ.get("WK_RETRIES", "2"))  # 额外重试次数（不含首次）
+RETRY_BACKOFF = float(os.environ.get("WK_RETRY_BACKOFF", "1.5"))  # 退避倍数
 LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "final_model_loader.log"))
 MODEL_EXTENSIONS = [".safetensors", ".ckpt", ".pt"]
+UI_NOTIFY = os.environ.get("WK_UI_NOTIFY", "1") in ("1", "true", "True")  # 控制是否在SD界面抛错提示
+PENDING_UI_LOGS = []  # shared.log 未就绪时临时缓存
 
 # safetensors import ----------------------------------------------------------
 try:
@@ -65,6 +70,51 @@ def get_logger():
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(file_handler)
     return logger
+
+# ========== UI 提示封装 ==========
+def notify_ui(message: str):
+    """尝试通过 stable-diffusion-webui 的 shared.log（若存在）向前端展示，失败则仅打印。"""
+    # 1) 优先尝试使用 Gradio 的内置提示（左上角临时提示框）
+    try:
+        import gradio as gr
+        try:
+            gr.Info(message)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 2) 回退到 shared.log 列表（若存在）
+    try:
+        import modules.shared as shared
+        if hasattr(shared, 'log') and isinstance(shared.log, list):
+            shared.log.append(f"[授权] {message}")
+            # 若之前有缓存，尝试一次性刷新并清空
+            if PENDING_UI_LOGS:
+                for m in PENDING_UI_LOGS:
+                    shared.log.append(f"[授权] {m}")
+                PENDING_UI_LOGS.clear()
+        else:
+            # log结构尚未就绪，加入缓存
+            PENDING_UI_LOGS.append(message)
+    except Exception:
+        # shared模块尚未可用，加入缓存
+        PENDING_UI_LOGS.append(message)
+    print(f"[final-loader][UI] {message}")
+
+def _flush_pending_ui_logs():
+    """尝试刷新缓存的UI日志到shared.log, 在脚本末尾调用一次。"""
+    if not PENDING_UI_LOGS:
+        return
+    try:
+        import modules.shared as shared
+        if hasattr(shared, 'log') and isinstance(shared.log, list):
+            for m in PENDING_UI_LOGS:
+                shared.log.append(f"[授权] {m}")
+            PENDING_UI_LOGS.clear()
+    except Exception:
+        # 仍不可用则忽略，后续notify_ui再次调用时会再尝试
+        pass
 
 # ========== 设备指纹获取 ==========
 def get_device_fingerprint():
@@ -119,17 +169,41 @@ def request_decryption_key(model_id: str, logger=None) -> dict:
             logger.info(f"GPU信息: {gpu}")
             logger.info(f"发送请求到服务器: {SERVER_URL}")
         
-        # 使用model_id作为key发送验证请求
-        response = requests.post(
-            SERVER_URL,
-            json={
-                "key": model_id,  # model_id就是api_key
-                "mac": mac,
-                "cpu": gpu
-            },
-            timeout=TIMEOUT
-        )
-        response.raise_for_status()
+        # 仅在网络超时/连接错误时重试；业务逻辑错误不重试
+        attempt = 0
+        delay = 1.0
+        response = None
+        while True:
+            try:
+                if logger:
+                    logger.info(f"请求授权（第 {attempt+1} 次） -> {SERVER_URL}")
+                response = requests.post(
+                    SERVER_URL,
+                    json={
+                        "key": model_id,
+                        "mac": mac,
+                        "cpu": gpu
+                    },
+                    timeout=TIMEOUT
+                )
+                response.raise_for_status()
+                break  # 成功拿到响应，无需重试
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_ex:
+                # 仅对可恢复的网络错误按 RETRIES 尝试
+                if attempt >= RETRIES:
+                    if logger:
+                        logger.error(f"网络重试已耗尽: {net_ex}")
+                    raise ConnectionError(f"无法连接到许可证服务器: {net_ex}")
+                if logger:
+                    logger.warning(f"网络问题（{type(net_ex).__name__}），将在 {delay:.1f}s 后重试: {net_ex}")
+                time.sleep(delay)
+                delay *= RETRY_BACKOFF
+                attempt += 1
+            except requests.exceptions.RequestException as other_ex:
+                # 其他请求异常（如 HTTP 错误码），不做重试，直接抛出
+                if logger:
+                    logger.error(f"请求失败，不重试: {other_ex}")
+                raise
         
         if logger:
             logger.info(f"服务器原始响应内容：{response.text}")
@@ -145,14 +219,12 @@ def request_decryption_key(model_id: str, logger=None) -> dict:
         timestamp = data.get("timestamp", 0)
         
         if code == 0:
-            # 失败情况
+            # 业务逻辑失败：不重试
             error_msg = msg if msg else "Unknown server error"
             if logger:
-                logger.error(f"服务器拒绝请求: {error_msg}")
-            # 使用更友好的错误信息，不抛出异常，而是返回None让调用者处理
+                logger.error(f"服务器拒绝请求(不重试): {error_msg}")
             print(f"[final-loader] ⚠️ 模型授权失败: {error_msg}")
             print(f"[final-loader] 请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用")
-            # 返回None表示失败，让调用者知道无法解密
             return None
         
         # 成功情况
@@ -393,10 +465,12 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     
                     # 检查是否获取到解密信息
                     if decrypt_info is None:
-                        error_msg = f"无法获取解密密钥，请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用"
+                        error_msg = f"授权失败: 无法获取解密密钥，model_id '{model_id}' 可能未创建或已停用"
                         logger.error(error_msg)
-                        print(f"[final-loader] ❌ {error_msg}")
-                        # 返回None，让SD WebUI知道这个模型无法加载，但不抛出异常
+                        notify_ui(error_msg)
+                        if UI_NOTIFY:
+                            # 抛出异常以便在SD界面右上角显示红色错误
+                            raise RuntimeError(error_msg)
                         return None
                     
                     logger.info("成功获取远程解密密钥")
@@ -417,8 +491,9 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
-                    print(f"[final-loader] ERROR decrypt/load: {e}")
-                    # 返回None而不是抛出异常，让SD WebUI优雅处理
+                    notify_ui(f"解密失败: {e}")
+                    if UI_NOTIFY:
+                        raise
                     return None
         else:
             logger.warning("头部解析失败，使用原始加载器")
@@ -441,7 +516,7 @@ def final_load_file(filename, device="cpu"):
     Hook safetensors.torch.load_file，确保LoRAs等也能被处理
     """
     logger = get_logger()
-    print(f"[final-loader] >>> final_load_file: {filename}")
+    print(f"[wkkkkklora] >>> final_load_file: {filename}")
     logger.info(f"开始处理safetensors文件: {filename}")
     
     low = filename.lower()
@@ -483,10 +558,11 @@ def final_load_file(filename, device="cpu"):
                     
                     # 检查是否获取到解密信息
                     if decrypt_info is None:
-                        error_msg = f"无法获取解密密钥，请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用"
+                        error_msg = f"授权失败: 无法获取解密密钥，model_id '{model_id}' 可能未创建或已停用"
                         logger.error(error_msg)
-                        print(f"[final-loader] ❌ {error_msg}")
-                        # 返回None，让SD WebUI知道这个模型无法加载，但不抛出异常
+                        notify_ui(error_msg)
+                        if UI_NOTIFY:
+                            raise RuntimeError(error_msg)
                         return None
                     
                     logger.info("成功获取远程解密密钥")
@@ -507,8 +583,9 @@ def final_load_file(filename, device="cpu"):
                     
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
-                    print(f"[final-loader] ERROR decrypt/load: {e}")
-                    # 返回None而不是抛出异常，让SD WebUI优雅处理
+                    notify_ui(f"解密失败: {e}")
+                    if UI_NOTIFY:
+                        raise
                     return None
         else:
             logger.warning("头部解析失败，使用原始加载器")
@@ -530,4 +607,7 @@ print("[final-loader] sd_models.read_state_dict successfully hooked (final_model
 
 if HAVE_SAFETENSORS and ORIGINAL_LOAD_FILE:
     st.load_file = final_load_file
-    print("[final-loader] safetensors.torch.load_file successfully hooked (final_model_loader).")
+    print("[wkkkkk] safetensors.torch.load_file successfully hooked (final_model_loader).")
+
+# 尝试在脚本加载完成时刷新可能在早期阶段积累的缓存消息
+_flush_pending_ui_logs()

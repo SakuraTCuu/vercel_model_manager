@@ -225,13 +225,31 @@ function DashboardPage() {
   const [logPage, setLogPage] = useState(1);
   const logPageSize = 10;
   const [logTotal, setLogTotal] = useState(0);
+  // 日志筛选
+  const [logKey, setLogKey] = useState("");
+  const [logMac, setLogMac] = useState("");
+  const [logIp, setLogIp] = useState("");
+  const [logCpu, setLogCpu] = useState("");
+  const [logStatus, setLogStatus] = useState(""); // '', normal, exception, warning
+  const [logQ, setLogQ] = useState(""); // message 关键词
+  const [logStart, setLogStart] = useState("");
+  const [logEnd, setLogEnd] = useState("");
 
   // mock 日志数据
   // 加载日志数据（改为接口）
   async function fetchLogs(page: number) {
     setLogLoading(true);
     try {
-      const res = await fetch(`/api/apikey-log?page=${page}&pageSize=${logPageSize}`);
+      const params = new URLSearchParams({ page: String(page), pageSize: String(logPageSize) });
+      if (logKey) params.set('key', logKey);
+      if (logMac) params.set('mac', logMac);
+      if (logIp) params.set('ip', logIp);
+      if (logCpu) params.set('cpu', logCpu);
+      if (logStatus) params.set('status', logStatus);
+      if (logQ) params.set('q', logQ);
+      if (logStart) params.set('start', logStart);
+      if (logEnd) params.set('end', logEnd);
+      const res = await fetch(`/api/apikey-log?${params.toString()}`);
       const result = await res.json();
       setLogs(result.data);
       setLogTotal(result.total);
@@ -246,7 +264,17 @@ function DashboardPage() {
     if (activeTab === "log") {
       fetchLogs(logPage);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, logPage]);
+
+  // 当筛选项变化时，回到第一页并查询
+  useEffect(() => {
+    if (activeTab === 'log') {
+      setLogPage(1);
+      fetchLogs(1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logKey, logMac, logIp, logCpu, logStatus, logQ, logStart, logEnd]);
 
   useEffect(() => {
     if (activeTab === "add" || activeTab === "manage") {
@@ -255,7 +283,8 @@ function DashboardPage() {
   }, [activeTab, page]);
 
   useEffect(() => {
-    if (activeTab === "model") {
+    // 需要在新增与管理页面也加载模型列表，供下拉选择使用
+    if (activeTab === "model" || activeTab === "add" || activeTab === "manage") {
       fetchModels();
     }
   }, [activeTab]);
@@ -487,6 +516,26 @@ function DashboardPage() {
         {activeTab === "log" && (
           <div className="w-full bg-white p-6 rounded shadow min-h-[300px]">
             <h3 className="text-xl font-bold mb-6 text-left">请求日志</h3>
+            {/* 筛选区域 */}
+            <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+              <input className="px-3 py-2 border rounded" placeholder="Key 包含" value={logKey} onChange={e=>setLogKey(e.target.value)} />
+              <input className="px-3 py-2 border rounded" placeholder="MAC 包含" value={logMac} onChange={e=>setLogMac(e.target.value)} />
+              <input className="px-3 py-2 border rounded" placeholder="IP 包含" value={logIp} onChange={e=>setLogIp(e.target.value)} />
+              <input className="px-3 py-2 border rounded" placeholder="CPU 包含" value={logCpu} onChange={e=>setLogCpu(e.target.value)} />
+              <select className="px-3 py-2 border rounded" value={logStatus} onChange={e=>setLogStatus(e.target.value)}>
+                <option value="">全部状态</option>
+                <option value="normal">正常</option>
+                <option value="warning">警告</option>
+                <option value="exception">异常</option>
+              </select>
+              <input className="px-3 py-2 border rounded" placeholder="消息关键词" value={logQ} onChange={e=>setLogQ(e.target.value)} />
+              <input className="px-3 py-2 border rounded" placeholder="开始时间(YYYY-MM-DD HH:mm:ss)" value={logStart} onChange={e=>setLogStart(e.target.value)} />
+              <input className="px-3 py-2 border rounded" placeholder="结束时间(YYYY-MM-DD HH:mm:ss)" value={logEnd} onChange={e=>setLogEnd(e.target.value)} />
+            </div>
+            <div className="mb-4 flex gap-2">
+              <button className="px-3 py-1 rounded border bg-gray-100 hover:bg-gray-200" onClick={()=>fetchLogs(1)}>查询</button>
+              <button className="px-3 py-1 rounded border bg-gray-100 hover:bg-gray-200" onClick={()=>{setLogKey("");setLogMac("");setLogIp("");setLogCpu("");setLogStatus("");setLogQ("");setLogStart("");setLogEnd("");}}>重置</button>
+            </div>
             {logLoading ? (
               <div className="flex items-center justify-center h-40 text-blue-600 text-lg">数据加载中...</div>
             ) : logs.length === 0 ? (
@@ -508,13 +557,13 @@ function DashboardPage() {
                     </thead>
                     <tbody>
                       {logs.map(item => (
-                        <tr key={item.id} className={item.status === "异常" ? "bg-red-50" : ""}>
+                        <tr key={item.id} className={item.status === "异常" ? "bg-red-50" : (item.status === '警告' ? 'bg-yellow-50' : "") }>
                           <td className="p-2 text-center break-all max-w-[180px]">{item.key}</td>
                           <td className="p-2 text-center">{item.mac}</td>
                           <td className="p-2 text-center">{item.cpu}</td>
                           <td className="p-2 text-center">{item.ip}</td>
                           <td className="p-2 text-center">{item.time}</td>
-                          <td className={`p-2 text-center font-bold ${item.status === "异常" ? "text-red-600" : "text-green-600"}`}>{item.status}</td>
+                          <td className={`p-2 text-center font-bold ${item.status === "异常" ? "text-red-600" : (item.status==='警告' ? 'text-yellow-600' : "text-green-600")}`}>{item.status}</td>
                           <td className={`p-2 text-center ${item.status === "异常" ? "text-red-600 font-bold" : "text-gray-400"}`}>{item.error || '-'}</td>
                         </tr>
                       ))}
@@ -706,24 +755,6 @@ function DashboardPage() {
                           <td className="p-2 whitespace-nowrap">
                             <div className="flex gap-2 justify-end min-w-[140px]">
                               <button
-                                className={`px-2 py-1 rounded text-xs ${item.status ? "bg-gray-200 hover:bg-gray-300" : "bg-green-200 hover:bg-green-300"}`}
-                                onClick={() => toggleStatus(item.id, item.status)}
-                              >
-                                {item.status ? "停用" : "激活"}
-                              </button>
-                              <button
-                                className="px-2 py-1 rounded text-xs bg-purple-200 hover:bg-purple-300"
-                                onClick={() => resetMac(item.id)}
-                              >
-                                重置MAC
-                              </button>
-                              <button
-                                className="px-2 py-1 rounded text-xs bg-red-200 hover:bg-red-300"
-                                onClick={() => setDeleteId(item.id)}
-                              >
-                                删除
-                              </button>
-                              <button
                                 className="px-2 py-1 rounded text-xs bg-blue-200 hover:bg-blue-300"
                                 onClick={() => setDetailItem(item)}
                               >
@@ -778,9 +809,16 @@ function DashboardPage() {
                       <div className="mb-2"><span className="font-semibold">请求次数：</span>{detailItem.requestCount}</div>
                       <div className="mb-2"><span className="font-semibold">IP：</span>{detailItem.ip}</div>
                       <div className="mb-2"><span className="font-semibold">状态：</span>{detailItem.status ? "激活" : "停用"}</div>
-                      <div className="mt-4 flex justify-end">
+                      <div className="mt-4 flex justify-end gap-2">
                         <button
-                          className="px-4 py-1 rounded bg-purple-600 text-white hover:bg-purple-700 mr-2"
+                          className={`px-4 py-1 rounded text-white ${detailItem.status ? 'bg-gray-600 hover:bg-gray-700' : 'bg-green-600 hover:bg-green-700'}`}
+                          onClick={async () => {
+                            await toggleStatus(detailItem.id, detailItem.status);
+                            setDetailItem(null);
+                          }}
+                        >{detailItem.status ? '停用' : '启用'}</button>
+                        <button
+                          className="px-4 py-1 rounded bg-purple-600 text-white hover:bg-purple-700"
                           onClick={async () => {
                             await resetMac(detailItem.id);
                             setDetailItem(null);
@@ -1089,16 +1127,14 @@ function DashboardPage() {
                     platform: { value: string };
                     amount: { value: string };
                     remark: { value: string };
-                    status: { checked: boolean };
                   };
                   const patchData = {
                     id: editItem.id,
                     buyer: form.buyer.value,
-                    model: form.model.value,
+                    modelId: Number(form.model.value),
                     platform: form.platform.value,
                     amount: form.amount.value,
                     remark: form.remark.value,
-                    status: form.status.checked,
                   };
                   const res = await fetch("/api/apikey", {
                     method: "PATCH",
@@ -1129,10 +1165,9 @@ function DashboardPage() {
                   <select
                     name="model"
                     className="w-full px-3 py-2 border rounded"
-                    defaultValue={editItem.model}
+                    defaultValue={editItem.modelId}
                     required
                   >
-                    {/* modelOptions 移除，改为 models 列表 */}
                     {models.map(opt => (
                       <option key={opt.id} value={opt.id}>{opt.label}</option>
                     ))}
@@ -1146,9 +1181,8 @@ function DashboardPage() {
                     defaultValue={editItem.platform}
                     required
                   >
-                    {/* platformOptions 移除，改为 models 列表 */}
-                    {models.map(opt => (
-                      <option key={opt.id} value={opt.platform}>{opt.platform}</option>
+                    {Array.from(new Set(models.map(opt => opt.platform))).map(p => (
+                      <option key={p} value={p}>{p}</option>
                     ))}
                   </select>
                 </div>
@@ -1171,16 +1205,7 @@ function DashboardPage() {
                     defaultValue={editItem.remark}
                   />
                 </div>
-                <div className="mb-4 flex items-center gap-2">
-                  <input
-                    name="status"
-                    type="checkbox"
-                    className="mr-2"
-                    defaultChecked={editItem.status}
-                    id="edit-status"
-                  />
-                  <label htmlFor="edit-status" className="text-gray-700 select-none">激活</label>
-                </div>
+                {/* 去掉激活开关，状态在详情页中控制 */}
                 {editError && <div className="mb-4 text-red-500 text-sm">{editError}</div>}
                 <button
                   type="submit"
