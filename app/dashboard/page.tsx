@@ -133,7 +133,8 @@ function DashboardPage() {
       modelId,
       platform: foundModel ? foundModel.platform : platform,
       amount,
-      mac: `AA:BB:CC:DD:EE:${Math.floor(Math.random()*90+10)}`,
+      // 首次创建不绑定 MAC，留空以便首次请求时绑定真实设备
+      mac: "",
       lastRequest: createdAt,
       requestCount: 0,
       ip: "127.0.0.1",
@@ -184,6 +185,18 @@ function DashboardPage() {
     setApiKeys(data.data);
     setTotal(data.total);
     setLoading(false);
+  }
+
+  // 重置 MAC（将 mac 置为空字符串，便于下一次请求重新绑定）
+  async function resetMac(id: number) {
+    const ok = typeof window === 'undefined' ? true : window.confirm('确定要重置该 Key 的 MAC 吗？下次请求将重新绑定当前设备。');
+    if (!ok) return;
+    await fetch('/api/apikey', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, mac: '' }),
+    });
+    fetchApiKeys(page);
   }
 
   // 加载模型列表
@@ -699,6 +712,12 @@ function DashboardPage() {
                                 {item.status ? "停用" : "激活"}
                               </button>
                               <button
+                                className="px-2 py-1 rounded text-xs bg-purple-200 hover:bg-purple-300"
+                                onClick={() => resetMac(item.id)}
+                              >
+                                重置MAC
+                              </button>
+                              <button
                                 className="px-2 py-1 rounded text-xs bg-red-200 hover:bg-red-300"
                                 onClick={() => setDeleteId(item.id)}
                               >
@@ -760,6 +779,13 @@ function DashboardPage() {
                       <div className="mb-2"><span className="font-semibold">IP：</span>{detailItem.ip}</div>
                       <div className="mb-2"><span className="font-semibold">状态：</span>{detailItem.status ? "激活" : "停用"}</div>
                       <div className="mt-4 flex justify-end">
+                        <button
+                          className="px-4 py-1 rounded bg-purple-600 text-white hover:bg-purple-700 mr-2"
+                          onClick={async () => {
+                            await resetMac(detailItem.id);
+                            setDetailItem(null);
+                          }}
+                        >重置MAC</button>
                         <button
                           className="px-4 py-1 rounded bg-green-600 text-white hover:bg-green-700"
                           onClick={async () => {

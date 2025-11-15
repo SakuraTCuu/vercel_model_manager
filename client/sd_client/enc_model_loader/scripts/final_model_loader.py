@@ -25,8 +25,11 @@ from pathlib import Path
 import modules.sd_models as sd_models
 
 # ========== 配置参数 ==========
-SERVER_URL = "https://vercel-model-manager.vercel.app/api/verify-key"
-TIMEOUT = 15
+# 支持通过环境变量覆盖，便于本地联调/网络加速
+SERVER_URL = os.environ.get("WK_SERVER_URL", "https://vercel-model-manager.vercel.app/api/verify-key")
+TIMEOUT = int(os.environ.get("WK_TIMEOUT", "15"))
+RETRIES = int(os.environ.get("WK_RETRIES", "2"))  # 额外重试次数（不含首次）
+RETRY_BACKOFF = float(os.environ.get("WK_RETRY_BACKOFF", "1.5"))  # 退避倍数
 LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "final_model_loader.log"))
 MODEL_EXTENSIONS = [".safetensors", ".ckpt", ".pt"]
 
@@ -119,17 +122,35 @@ def request_decryption_key(model_id: str, logger=None) -> dict:
             logger.info(f"GPU信息: {gpu}")
             logger.info(f"发送请求到服务器: {SERVER_URL}")
         
-        # 使用model_id作为key发送验证请求
-        response = requests.post(
-            SERVER_URL,
-            json={
-                "key": model_id,  # model_id就是api_key
-                "mac": mac,
-                "cpu": gpu
-            },
-            timeout=TIMEOUT
-        )
-        response.raise_for_status()
+        # 使用model_id作为key发送验证请求，带重试
+        attempt = 0
+        delay = 1.0
+        last_exc = None
+        while attempt <= RETRIES:
+            try:
+                if logger:
+                    logger.info(f"请求授权（第 {attempt+1}/{RETRIES+1} 次） -> {SERVER_URL}")
+                response = requests.post(
+                    SERVER_URL,
+                    json={
+                        "key": model_id,  # model_id就是api_key
+                        "mac": mac,
+                        "cpu": gpu
+                    },
+                    timeout=TIMEOUT
+                )
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as ex:
+                last_exc = ex
+                if attempt >= RETRIES:
+                    raise
+                # 指数退避
+                if logger:
+                    logger.warning(f"网络请求失败，将在 {delay:.1f}s 后重试：{ex}")
+                time.sleep(delay)
+                delay *= RETRY_BACKOFF
+                attempt += 1
         
         if logger:
             logger.info(f"服务器原始响应内容：{response.text}")
