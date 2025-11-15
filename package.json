@@ -6,14 +6,17 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "db:studio": "prisma studio",
+    "db:reset": "prisma migrate reset --force --skip-seed",
+    "db:truncate": "node scripts/clear-test-data.js --mode=keys --yes",
+    "db:truncate:all": "node scripts/clear-test-data.js --mode=all --include-models --yes"
   },
   "dependencies": {
-    "@prisma/client": "^6.11.1",
+    "@prisma/client": "^6.19.0",
     "gm": "^1.25.0",
     "next": "14.2.5",
     "pg": "^8.16.3",
-    "prisma": "^6.11.1",
     "react": "^18",
     "react-dom": "^18",
     "uuid": "^11.1.0"
@@ -25,6 +28,7 @@
     "eslint": "^8",
     "eslint-config-next": "14.2.5",
     "postcss": "^8",
+    "prisma": "^6.19.0",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
   }

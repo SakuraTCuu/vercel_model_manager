@@ -37,6 +37,19 @@ export async function POST(req: NextRequest) {
 
   // 检查参数
   if (!key || !mac || !cpu) {
+    // 记录缺少参数的日志
+    await prisma.apiKeyRequestLog.create({
+      data: {
+        apiKeyId: null,
+        key: key || 'unknown',
+        mac: mac || 'unknown',
+        cpu: cpu || 'unknown',
+        ip,
+        timestamp: now,
+        status: 'exception',
+        message: '缺少参数',
+      },
+    });
     return formatResponse(0, '缺少参数');
   }
 
@@ -45,6 +58,19 @@ export async function POST(req: NextRequest) {
   
   // 检查model_id是否存在
   if (!apiKey) {
+    // 记录未知model_id的日志
+    await prisma.apiKeyRequestLog.create({
+      data: {
+        apiKeyId: null,
+        key: key,
+        mac,
+        cpu,
+        ip,
+        timestamp: now,
+        status: 'exception',
+        message: '未知的model_id',
+      },
+    });
     return formatResponse(0, '未知的model_id');
   }
 
@@ -56,6 +82,7 @@ export async function POST(req: NextRequest) {
     await prisma.apiKeyRequestLog.create({
       data: {
         apiKeyId: apiKey.id,
+        key: apiKey.key,
         mac,
         cpu,
         ip,
@@ -92,6 +119,7 @@ export async function POST(req: NextRequest) {
   await prisma.apiKeyRequestLog.create({
     data: {
       apiKeyId: apiKey.id,
+      key: apiKey.key,
       mac,
       cpu,
       ip,
@@ -118,6 +146,21 @@ export async function POST(req: NextRequest) {
 
   // 检查模型是否存在解密密钥
   if (!apiKey.model?.decryptSecret) {
+    status = 'exception';
+    message = '模型解密密钥未配置';
+    // 记录日志
+    await prisma.apiKeyRequestLog.create({
+      data: {
+        apiKeyId: apiKey.id,
+        key: apiKey.key,
+        mac,
+        cpu,
+        ip,
+        timestamp: now,
+        status,
+        message,
+      },
+    });
     return formatResponse(0, '模型解密密钥未配置');
   }
 

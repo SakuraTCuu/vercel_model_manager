@@ -24,10 +24,10 @@ export async function GET(req: NextRequest) {
 
   // 返回 key 字段，若为白名单，异常后面加标志
   const logs = data.map((item: any) => {
-    const isWhitelist = item.apiKey.whitelists && item.apiKey.whitelists.length > 0;
+    const isWhitelist = item.apiKey && item.apiKey.whitelists && item.apiKey.whitelists.length > 0;
     return {
       id: item.id,
-      key: item.apiKey.key,
+      key: item.key || (item.apiKey ? item.apiKey.key : 'unknown'), // 优先使用key字段，如果不存在则从apiKey获取
       mac: item.mac,
       cpu: item.cpu,
       ip: item.ip,

@@ -14,6 +14,7 @@ import io
 import os
 import json
 import struct
+import time
 import torch
 import uuid
 import platform
@@ -89,6 +90,12 @@ def get_device_fingerprint():
 
 # ========== 远程密钥请求 ==========
 def request_decryption_key(model_id: str, logger=None) -> dict:
+
+    # return {
+    #     "success": True,
+    #     "xorResult": "id_value",
+    #     "timestamp": "1122232424"
+    # }
     """
     向远程服务器请求解密密钥
     使用从模型metadata中读取的model_id（实际就是api_key）进行验证
@@ -131,18 +138,40 @@ def request_decryption_key(model_id: str, logger=None) -> dict:
         if logger:
             logger.info(f"服务器响应: {data}")
         
-        if not data.get("success"):
-            error_msg = data.get("error", "Unknown server error")
+        # 检查统一返回格式
+        code = data.get("code", 0)
+        msg = data.get("msg", "")
+        id_value = data.get("id", "")
+        timestamp = data.get("timestamp", 0)
+        
+        if code == 0:
+            # 失败情况
+            error_msg = msg if msg else "Unknown server error"
             if logger:
                 logger.error(f"服务器拒绝请求: {error_msg}")
-            raise PermissionError(f"授权失败: {error_msg}")
+            # 使用更友好的错误信息，不抛出异常，而是返回None让调用者处理
+            print(f"[final-loader] ⚠️ 模型授权失败: {error_msg}")
+            print(f"[final-loader] 请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用")
+            # 返回None表示失败，让调用者知道无法解密
+            return None
         
-        # 返回后端提供的解密信息
-        return {
-            "success": True,
-            "xorResult": data.get("xorResult", ""),
-            "timestamp": data.get("timestamp", 0)
-        }
+        # 成功情况
+        if code == 1:
+            if logger:
+                logger.info(f"验证成功: {msg}")
+            if not id_value:
+                raise ValueError("服务器返回成功但缺少解密密钥(id字段)")
+            if not timestamp:
+                raise ValueError("服务器返回成功但缺少时间戳(timestamp字段)")
+            # 返回解密信息，id字段包含xorResult
+            return {
+                "success": True,
+                "xorResult": id_value,
+                "timestamp": timestamp
+            }
+        
+        # 未知的code值
+        raise ValueError(f"未知的返回code: {code}")
         
     except requests.exceptions.RequestException as e:
         if logger:
@@ -361,6 +390,15 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     logger.info(f"开始使用model_id请求远程解密密钥: {model_id}")
                     
                     decrypt_info = request_decryption_key(model_id, logger)
+                    
+                    # 检查是否获取到解密信息
+                    if decrypt_info is None:
+                        error_msg = f"无法获取解密密钥，请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用"
+                        logger.error(error_msg)
+                        print(f"[final-loader] ❌ {error_msg}")
+                        # 返回None，让SD WebUI知道这个模型无法加载，但不抛出异常
+                        return None
+                    
                     logger.info("成功获取远程解密密钥")
                     
                     # 使用wk_enc_loader的解密逻辑
@@ -380,8 +418,8 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
                     print(f"[final-loader] ERROR decrypt/load: {e}")
-                    # raise here so A1111 doesn't try to parse encrypted bytes
-                    raise
+                    # 返回None而不是抛出异常，让SD WebUI优雅处理
+                    return None
         else:
             logger.warning("头部解析失败，使用原始加载器")
     else:
@@ -442,6 +480,15 @@ def final_load_file(filename, device="cpu"):
                     logger.info(f"开始使用model_id请求远程解密密钥: {model_id}")
                     
                     decrypt_info = request_decryption_key(model_id, logger)
+                    
+                    # 检查是否获取到解密信息
+                    if decrypt_info is None:
+                        error_msg = f"无法获取解密密钥，请检查model_id '{model_id}' 是否在后端数据库中已创建且状态为启用"
+                        logger.error(error_msg)
+                        print(f"[final-loader] ❌ {error_msg}")
+                        # 返回None，让SD WebUI知道这个模型无法加载，但不抛出异常
+                        return None
+                    
                     logger.info("成功获取远程解密密钥")
                     
                     # 使用wk_enc_loader的解密逻辑
@@ -461,7 +508,8 @@ def final_load_file(filename, device="cpu"):
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
                     print(f"[final-loader] ERROR decrypt/load: {e}")
-                    raise
+                    # 返回None而不是抛出异常，让SD WebUI优雅处理
+                    return None
         else:
             logger.warning("头部解析失败，使用原始加载器")
     else:

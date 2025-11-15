@@ -41,8 +41,9 @@ model ApiKey {
 
 model ApiKeyRequestLog {
   id         Int      @id @default(autoincrement())
-  apiKeyId   Int
-  apiKey     ApiKey   @relation(fields: [apiKeyId], references: [id])
+  apiKeyId   Int?     // 改为可选，允许记录未知key的请求
+  apiKey     ApiKey?  @relation(fields: [apiKeyId], references: [id])
+  key        String?  // 添加key字段，用于记录未知key的值
   mac        String
   cpu        String
   ip         String
