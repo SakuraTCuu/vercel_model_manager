@@ -742,7 +742,7 @@ function DashboardPage() {
                       {pagedApiKeys.map(item => (
                         <tr key={item.id} className="border-b">
                           <td className="p-2 text-center whitespace-nowrap">{item.buyer}</td>
-                          <td className="p-2 text-center whitespace-nowrap">{item.model}</td>
+                          <td className="p-2 text-center whitespace-nowrap">{item.model?.label || item.model?.name || '-'}</td>
                           <td className="p-2 text-center whitespace-nowrap">{item.createdAt ? formatDateTime(item.createdAt) : '-'}</td>
                           <td className="p-2 text-center whitespace-nowrap">{item.requestCount}</td>
                           <td className="p-2 text-center whitespace-nowrap">{item.ip}</td>
@@ -799,7 +799,7 @@ function DashboardPage() {
                       >×</button>
                       <h4 className="text-lg font-bold mb-4">API Key 详情</h4>
                       <div className="mb-2"><span className="font-semibold">玩家昵称：</span>{detailItem.buyer}</div>
-                      <div className="mb-2"><span className="font-semibold">模型：</span>{detailItem.model}</div>
+                      <div className="mb-2"><span className="font-semibold">模型：</span>{detailItem.model?.label || detailItem.model?.name || '-'}</div>
                       <div className="mb-2"><span className="font-semibold">平台：</span>{detailItem.platform}</div>
                       <div className="mb-2"><span className="font-semibold">金额：</span>{detailItem.amount}</div>
                       <div className="mb-2"><span className="font-semibold">MAC：</span>{detailItem.mac}</div>

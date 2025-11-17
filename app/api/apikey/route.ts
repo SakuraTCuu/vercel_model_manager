@@ -15,6 +15,9 @@ export async function GET(req: NextRequest) {
       orderBy: { lastRequest: 'desc' },
       skip: (page - 1) * pageSize,
       take: pageSize,
+      include: {
+        model: true,
+      },
     }),
   ]);
   return NextResponse.json({ total, data });

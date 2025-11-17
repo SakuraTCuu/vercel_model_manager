@@ -33,7 +33,6 @@ RETRY_BACKOFF = float(os.environ.get("WK_RETRY_BACKOFF", "1.5"))  # 退避倍数
 LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "final_model_loader.log"))
 MODEL_EXTENSIONS = [".safetensors", ".ckpt", ".pt"]
 UI_NOTIFY = os.environ.get("WK_UI_NOTIFY", "1") in ("1", "true", "True")  # 控制是否在SD界面抛错提示
-PENDING_UI_LOGS = []  # shared.log 未就绪时临时缓存
 
 # safetensors import ----------------------------------------------------------
 try:
@@ -71,49 +70,12 @@ def get_logger():
         logger.addHandler(file_handler)
     return logger
 
-# ========== UI 提示封装 ==========
-def notify_ui(message: str):
-    """尝试通过 stable-diffusion-webui 的 shared.log（若存在）向前端展示，失败则仅打印。"""
-    # 1) 优先尝试使用 Gradio 的内置提示（左上角临时提示框）
+# ========== 简单控制台提示 ==========
+def notify_console(message: str):
+    """仅在控制台输出关键信息，便于排查问题。"""
     try:
-        import gradio as gr
-        try:
-            gr.Info(message)
-        except Exception:
-            pass
+        print(f"[final-loader] {message}")
     except Exception:
-        pass
-
-    # 2) 回退到 shared.log 列表（若存在）
-    try:
-        import modules.shared as shared
-        if hasattr(shared, 'log') and isinstance(shared.log, list):
-            shared.log.append(f"[授权] {message}")
-            # 若之前有缓存，尝试一次性刷新并清空
-            if PENDING_UI_LOGS:
-                for m in PENDING_UI_LOGS:
-                    shared.log.append(f"[授权] {m}")
-                PENDING_UI_LOGS.clear()
-        else:
-            # log结构尚未就绪，加入缓存
-            PENDING_UI_LOGS.append(message)
-    except Exception:
-        # shared模块尚未可用，加入缓存
-        PENDING_UI_LOGS.append(message)
-    print(f"[final-loader][UI] {message}")
-
-def _flush_pending_ui_logs():
-    """尝试刷新缓存的UI日志到shared.log, 在脚本末尾调用一次。"""
-    if not PENDING_UI_LOGS:
-        return
-    try:
-        import modules.shared as shared
-        if hasattr(shared, 'log') and isinstance(shared.log, list):
-            for m in PENDING_UI_LOGS:
-                shared.log.append(f"[授权] {m}")
-            PENDING_UI_LOGS.clear()
-    except Exception:
-        # 仍不可用则忽略，后续notify_ui再次调用时会再尝试
         pass
 
 # ========== 设备指纹获取 ==========
@@ -467,9 +429,9 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     if decrypt_info is None:
                         error_msg = f"授权失败: 无法获取解密密钥，model_id '{model_id}' 可能未创建或已停用"
                         logger.error(error_msg)
-                        notify_ui(error_msg)
+                        notify_console(error_msg)
                         if UI_NOTIFY:
-                            # 抛出异常以便在SD界面右上角显示红色错误
+                            # 如需在界面显式失败，仍可抛出异常；否则仅打印日志
                             raise RuntimeError(error_msg)
                         return None
                     
@@ -491,7 +453,7 @@ def final_read_state_dict(checkpoint_file, print_global_state=False, map_locatio
                     
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
-                    notify_ui(f"解密失败: {e}")
+                    notify_console(f"解密失败: {e}")
                     if UI_NOTIFY:
                         raise
                     return None
@@ -560,7 +522,7 @@ def final_load_file(filename, device="cpu"):
                     if decrypt_info is None:
                         error_msg = f"授权失败: 无法获取解密密钥，model_id '{model_id}' 可能未创建或已停用"
                         logger.error(error_msg)
-                        notify_ui(error_msg)
+                        notify_console(error_msg)
                         if UI_NOTIFY:
                             raise RuntimeError(error_msg)
                         return None
@@ -583,7 +545,7 @@ def final_load_file(filename, device="cpu"):
                     
                 except Exception as e:
                     logger.error(f"解密/加载失败: {str(e)}")
-                    notify_ui(f"解密失败: {e}")
+                    notify_console(f"解密失败: {e}")
                     if UI_NOTIFY:
                         raise
                     return None
@@ -609,5 +571,4 @@ if HAVE_SAFETENSORS and ORIGINAL_LOAD_FILE:
     st.load_file = final_load_file
     print("[wkkkkk] safetensors.torch.load_file successfully hooked (final_model_loader).")
 
-# 尝试在脚本加载完成时刷新可能在早期阶段积累的缓存消息
-_flush_pending_ui_logs()
+# 去除UI集成，仅保留控制台与文件日志
